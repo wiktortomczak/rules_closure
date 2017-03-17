@@ -17,19 +17,68 @@
 
 load("//closure/compiler:closure_js_library.bzl", "closure_js_library")
 
-def _collect_includes(srcs):
-  includes = ["."]
-  for src in srcs:
-    include = ""
-    if src.startswith("@"):
-      include = Label(src).workspace_root
-    if include and not include in includes:
-      includes += [include]
-  return includes
+ 
+def _js_proto_compile_impl(ctx):
+  # Direct sources.
+  srcs = depset()
+  for src in ctx.attr.srcs:
+    srcs += src.files
+  srcs = srcs.to_list()
+
+  # All sources: direct + transitive, from dependencies.
+  transitive_srcs = depset(srcs)
+  for js_proto_library in ctx.attr.deps:
+    transitive_srcs += js_proto_library.transitive_srcs
+  transitive_srcs = transitive_srcs.to_list()
+
+  js_out_options = [
+    "library=" + ctx.label.name
+    # TODO: add_require_for_enums, testonly, binary, import_style
+  ]
+  args = [
+    "--js_out=%s:%s" % (",".join(js_out_options), ctx.outputs.library.dirname),
+    "--descriptor_set_out=" + ctx.outputs.descriptor.path,
+  ]
+  args += ["-I" + root for root in _GetWorkspaceRoots(transitive_srcs)]
+  args += [src.path for src in srcs]
+
+  ctx.action(
+    inputs=transitive_srcs,
+    outputs=[ctx.outputs.library, ctx.outputs.descriptor],
+    arguments=args,
+    progress_message="Generating .js code from .proto %s" % ctx.label.name,
+    executable=ctx.executable.protocbin)
+
+  return struct(transitive_srcs=transitive_srcs)
+
+
+js_proto_compile = rule(
+  implementation = _js_proto_compile_impl,
+  attrs = {
+    "srcs": attr.label_list(allow_files=True),
+    "deps": attr.label_list(),
+    # TODO:
+    # add_require_for_enums
+    # testonly
+    # binary
+    # import_style
+    "protocbin": attr.label(
+      default=Label("//third_party/protobuf:protoc"),
+      executable=True,
+      cfg="host"
+    ),
+  },
+  outputs = {
+    "library": "%{name}.js",
+    "descriptor": "%{name}.descriptor"
+  }
+)
+
 
 def closure_js_proto_library(
     name,
     srcs,
+    deps = [],
     suppress = [],
     add_require_for_enums = 0,
     testonly = None,
@@ -37,38 +86,25 @@ def closure_js_proto_library(
     import_style = None,
     protocbin = Label("//third_party/protobuf:protoc"),
     **kwargs):
-  cmd = ["$(location %s)" % protocbin]
-  js_out_options = ["library=%s,error_on_name_conflict" % name]
-  if add_require_for_enums:
-    js_out_options += ["add_require_for_enums"]
-  if testonly:
-    js_out_options += ["testonly"]
-  if binary:
-    js_out_options += ["binary"]
-  if import_style:
-    js_out_options += ["import_style=%s" % import_style]
 
-  cmd += ["-I%s" % i for i in _collect_includes(srcs)]
-  cmd += ["--js_out=%s:$(@D)" % ",".join(js_out_options)]
-  cmd += ["--descriptor_set_out=$(@D)/%s.descriptor" % name]
-  cmd += ["$(locations " + src + ")" for src in srcs]
-
-  native.genrule(
-      name = name + "_gen",
-      srcs = srcs,
-      testonly = testonly,
-      visibility = ["//visibility:private"],
-      message = "Generating JavaScript Protocol Buffer file",
-      outs = [name + ".js", name + ".descriptor"],
-      tools = [protocbin],
-      cmd = " ".join(cmd),
+  js_proto_compile(
+    name = name + "_gen",
+    srcs = srcs,
+    deps = [dep + "_gen" for dep in deps],
+    protocbin = protocbin,
+    **kwargs
+    # TODO:
+    # add_require_for_enums
+    # testonly
+    # binary
+    # import_style
   )
-
+  
   closure_js_library(
       name = name,
-      srcs = [name + ".js"],
+      srcs = [name + "_gen.js"],
       testonly = testonly,
-      deps = [
+      deps = deps + [
           str(Label("//closure/library")),
           str(Label("//closure/protobuf:jspb")),
       ],
@@ -82,3 +118,19 @@ def closure_js_proto_library(
       ],
       **kwargs
   )
+
+
+def _GetWorkspaceRoots(files):
+  roots = depset()
+  for f in files:
+    if f.path.startswith('external/'):
+      workspace_name_end = f.path.find('/', len('external/'))
+      root = f.path[:workspace_name_end]
+      if root == 'external/protobuf':
+        # TODO: Remove when fixed: github.com/google/protobuf/issues/2598.
+        root = 'external/protobuf/src'
+      roots += [root]
+    else:
+      roots += [f.root.path or "."]
+  return roots.to_list()
+
