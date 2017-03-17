@@ -46,7 +46,8 @@ def _impl(ctx):
   _validate_css_graph(ctx, js)
 
   # This is the list of files we'll be generating.
-  outputs = [ctx.outputs.bin, ctx.outputs.map, ctx.outputs.stderr]
+  outputs = [ctx.outputs.bin, ctx.outputs.map,
+             ctx.outputs.manifest, ctx.outputs.stderr]
 
   # This is the subset of that list we'll report to parent rules.
   files = [ctx.outputs.bin, ctx.outputs.map]
@@ -60,6 +61,7 @@ def _impl(ctx):
       "JsCompiler",
       "--js_output_file", ctx.outputs.bin.path,
       "--create_source_map", ctx.outputs.map.path,
+      "--output_manifest", ctx.outputs.manifest.path,
       "--output_errors", ctx.outputs.stderr.path,
       "--language_in", JS_LANGUAGE_IN,
       "--language_out", ctx.attr.language,
@@ -219,6 +221,7 @@ def _impl(ctx):
           bin=ctx.outputs.bin,
           map=ctx.outputs.map,
           language=ctx.attr.language),
+      manifest=ctx.outputs.manifest,
       runfiles=ctx.runfiles(
           files=files + ctx.files.data,
           transitive_files=(collect_runfiles(deps) |
@@ -272,5 +275,6 @@ closure_js_binary = rule(
     outputs={
         "bin": "%{name}.js",
         "map": "%{name}.js.map",
+        "manifest": "%{name}.MF",
         "stderr": "%{name}-stderr.txt",
     })
